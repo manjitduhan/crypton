@@ -1,0 +1,4 @@
+# Generated source checkouts, build trees, and isolated installations.
+/sources/
+/build/
+/output/

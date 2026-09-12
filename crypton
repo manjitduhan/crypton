@@ -1,0 +1,718 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+# Crypto source/build runner.
+#
+# The command contract is intentionally small:
+#   install  - install host tools selected from requirements.yaml
+#   build    - clone and build configured projects into isolated directories
+#   run      - execute a built project's command
+#   clean    - remove generated build/install trees, but keep source checkouts
+#
+# All generated files stay below the repository root unless the user changes
+# the paths in configure.yaml.
+
+SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)"
+CONFIG_FILE="${CRYPTON_CONFIG:-$SCRIPT_DIR/configure.yaml}"
+REQUIREMENTS_FILE="${CRYPTON_REQUIREMENTS:-$SCRIPT_DIR/requirements.yaml}"
+JOBS="${CRYPTON_JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || printf '2')}"
+
+die() { printf 'crypton: error: %s\n' "$*" >&2; exit 1; }
+info() { printf 'crypton: %s\n' "$*"; }
+warn() { printf 'crypton: warning: %s\n' "$*" >&2; }
+
+require_file() {
+  [[ -f "$1" ]] || die "file not found: $1"
+}
+
+# This deliberately supports the small, documented YAML subset used by the
+# repository files. It avoids making yq/PyYAML a prerequisite for install.
+yaml_value() {
+  local file=$1 section=$2 key=$3
+  awk -v section="$section" -v key="$key" '
+    $0 ~ "^" section ":" { in_section=1; next }
+    in_section && $0 ~ "^[^ #[:space:]][^:]*:" { in_section=0 }
+    in_section && $0 ~ "^  [^ #[:space:]][^:]*:" { in_item=($0 ~ "^  " key ":"); if (in_item) { sub("^[^:]*:[[:space:]]*", ""); gsub(/^"|"$/, ""); print; exit } }
+  ' "$file"
+}
+
+project_value() {
+  local project=$1 key=$2
+  awk -v project="$project" -v key="$key" '
+    $0 ~ "^  " project ":[[:space:]]*$" { in_project=1; next }
+    in_project && $0 ~ "^  [^ #[:space:]][^:]*:" { in_project=0 }
+    in_project && $0 ~ "^    " key ":" { sub("^[^:]*:[[:space:]]*", ""); gsub(/^"|"$/, ""); print; exit }
+  ' "$CONFIG_FILE"
+}
+
+project_section_value() {
+  local project=$1 section=$2 key=$3
+  awk -v project="$project" -v section="$section" -v key="$key" '
+    $0 ~ "^  " project ":[[:space:]]*$" { in_project=1; next }
+    in_project && $0 ~ "^  [^ #[:space:]][^:]*:" { in_project=0 }
+    in_project && $0 ~ "^    " section ":[[:space:]]*$" { in_section=1; next }
+    in_section && $0 ~ "^    [^ #[:space:]][^:]*:" { in_section=0 }
+    in_section && $0 ~ "^      " key ":[[:space:]]*" { sub("^[^:]*:[[:space:]]*", ""); gsub(/^\"|\"$/, ""); print; exit }
+  ' "$CONFIG_FILE"
+}
+
+# Return one item per line from a project's optional YAML list.
+project_items() {
+  local project=$1 key=$2
+  awk -v project="$project" -v key="$key" '
+    $0 ~ "^  " project ":[[:space:]]*$" { in_project=1; next }
+    in_project && $0 ~ "^  [^ #[:space:]][^:]*:" { exit }
+    in_project && $0 ~ "^    " key ":[[:space:]]*$" { in_list=1; next }
+    in_list && /^      - / { sub(/^      - /, ""); gsub(/^\"|\"$/, ""); print; next }
+    in_list && /^    [^ #[:space:]][^:]*:/ { exit }
+  ' "$CONFIG_FILE"
+}
+
+project_plugins() { project_items "$1" plugins; }
+
+project_names() {
+  awk '
+    /^projects:[[:space:]]*$/ { in_projects=1; next }
+    in_projects && /^[^ #[:space:]][^:]*:/ { exit }
+    in_projects && /^  [a-zA-Z0-9_-]+:[[:space:]]*$/ { sub(/^  /, ""); sub(/:.*/, ""); print }
+  ' "$CONFIG_FILE"
+}
+
+detect_os() {
+  local kernel
+  kernel=$(uname -s)
+  case "$kernel" in
+    Darwin) printf 'macos'; return ;;
+    FreeBSD) printf 'freebsd'; return ;;
+    Linux) ;;
+    *) die "unsupported operating system: $kernel" ;;
+  esac
+
+  [[ -r /etc/os-release ]] || die 'Linux host does not provide /etc/os-release'
+  # shellcheck disable=SC1091
+  . /etc/os-release
+  case "${ID:-}" in
+    debian|ubuntu|linuxmint|kali|pop|raspbian) printf 'debian' ;;
+    fedora|rhel|centos|rocky|almalinux) printf 'fedora' ;;
+    arch|manjaro|endeavouros) printf 'arch' ;;
+    alpine) printf 'alpine' ;;
+    *) die "unsupported Linux distribution: ${ID:-unknown}; add it to requirements.yaml" ;;
+  esac
+}
+
+host_runner() {
+  if (( EUID == 0 )); then
+    printf ''
+  elif command -v sudo >/dev/null 2>&1; then
+    printf 'sudo'
+  else
+    die 'installing host dependencies requires root or sudo'
+  fi
+}
+
+install_requirements() {
+  require_file "$REQUIREMENTS_FILE"
+  local os manager packages runner dry_run=0
+  if [[ "${1:-}" == "--dry-run" ]]; then
+    dry_run=1
+  fi
+  os=$(detect_os)
+  manager=$(awk -v wanted="$os" '
+    /^  - os:/ { active=($0 ~ "os:[[:space:]]*" wanted "[[:space:]]*$") }
+    active && /^    manager:/ { sub("^[^:]*:[[:space:]]*", ""); gsub(/^"|"$/, ""); print; exit }
+  ' "$REQUIREMENTS_FILE")
+  packages=$(awk -v wanted="$os" '
+    /^  - os:/ { active=($0 ~ "os:[[:space:]]*" wanted "[[:space:]]*$") }
+    active && /^    package:/ { sub("^[^:]*:[[:space:]]*", ""); gsub(/^"|"$/, ""); print; exit }
+  ' "$REQUIREMENTS_FILE")
+  [[ -n "$manager" && -n "$packages" ]] || die "no dependency entry for OS: $os"
+  info "detected OS: $os; package manager: $manager"
+  if (( dry_run == 1 )); then
+    info "would install: $packages"
+    return
+  fi
+  runner=$(host_runner)
+
+  case "$manager" in
+    apt-get)
+      command -v apt-get >/dev/null || die 'apt-get is not installed'
+      [[ -n "$runner" ]] && "$runner" apt-get update
+      [[ -n "$runner" ]] && "$runner" apt-get install -y $packages || apt-get install -y $packages
+      ;;
+    dnf)
+      command -v dnf >/dev/null || die 'dnf is not installed'
+      [[ -n "$runner" ]] && "$runner" dnf install -y $packages || dnf install -y $packages
+      ;;
+    pacman)
+      command -v pacman >/dev/null || die 'pacman is not installed'
+      [[ -n "$runner" ]] && "$runner" pacman -S --needed --noconfirm $packages || pacman -S --needed --noconfirm $packages
+      ;;
+    apk)
+      command -v apk >/dev/null || die 'apk is not installed'
+      [[ -n "$runner" ]] && "$runner" apk add $packages || apk add $packages
+      ;;
+    brew)
+      command -v brew >/dev/null || die 'Homebrew is required on macOS: https://brew.sh/'
+      brew install $packages
+      ;;
+    pkg)
+      command -v pkg >/dev/null || die 'pkg is not installed'
+      [[ -n "$runner" ]] && "$runner" pkg install -y $packages || pkg install -y $packages
+      ;;
+    *) die "unsupported package manager in requirements.yaml: $manager" ;;
+  esac
+  info 'host dependencies installed'
+}
+
+source_dir() { printf '%s/%s' "$SCRIPT_DIR/$(yaml_value "$CONFIG_FILE" paths sources)" "$1"; }
+build_dir() { printf '%s/%s' "$SCRIPT_DIR/$(yaml_value "$CONFIG_FILE" paths build)" "$1"; }
+output_dir() { printf '%s/%s' "$SCRIPT_DIR/$(yaml_value "$CONFIG_FILE" paths output)" "$1"; }
+pid_file() { printf '%s/%s.pid' "$(output_dir "$1")" "$1"; }
+
+patch_dir() { printf '%s/patches/%s' "$SCRIPT_DIR" "$1"; }
+
+# Apply local project patches to the build copy, never to the downloaded Git
+# checkout. This keeps upstream sources clean and makes the changes repeatable
+# when a source checkout is refreshed.
+apply_project_patches() {
+  local project=$1 target=$2 patch_path patch_name patch_root
+  patch_root=$(patch_dir "$project")
+  [[ -d "$patch_root" ]] || return 0
+
+  while IFS= read -r -d '' patch_path; do
+    patch_name=$(basename -- "$patch_path")
+    if ! (cd "$target" && patch --batch --forward --strip=1 < "$patch_path" >/dev/null); then
+      die "failed to apply patch $patch_name for $project"
+    fi
+    info "applied $project patch: $patch_name"
+  done < <(find "$patch_root" -maxdepth 1 -type f -name '*.patch' -print0 | sort -z)
+}
+
+# A source checkout is reusable between builds. It is deliberately separate
+# from build/ and output/ so clean can preserve downloads and local history.
+clone_project() {
+  local project=$1 repo=$2 version=$3 src
+  src=$(source_dir "$project")
+  mkdir -p "$(dirname -- "$src")"
+  if [[ ! -d "$src/.git" ]]; then
+    info "cloning $project ($version)"
+    git clone --branch "$version" --single-branch "$repo" "$src"
+  else
+    if [[ -n "$(git -C "$src" status --porcelain)" ]]; then
+      die "$src has local changes; commit or remove them before rebuilding"
+    fi
+    info "updating $project ($version)"
+    git -C "$src" fetch --tags --prune origin
+    git -C "$src" checkout "$version"
+  fi
+}
+
+prepare_build_dir() {
+  local project=$1 dir
+  dir=$(build_dir "$project")
+  mkdir -p "$dir"
+  printf '%s' "$dir"
+}
+
+build_openssl() {
+  local project=$1 src dir prefix library library_count=0 static=0 shared=0
+  src=$(source_dir "$project"); dir=$(prepare_build_dir "$project"); prefix=$(output_dir "$project")
+  while IFS= read -r library; do
+    [[ -n "$library" ]] || continue
+    case "$library" in
+      static) static=1 ;;
+      shared) shared=1 ;;
+      *) die "invalid OpenSSL library type: $library" ;;
+    esac
+    library_count=$((library_count + 1))
+  done < <(project_items "$project" libraries)
+  # Preserve the historical behavior for custom configurations that omit the
+  # optional libraries list: build static libraries only.
+  if (( library_count == 0 )); then
+    static=1
+  fi
+  (( static == 1 )) || die 'OpenSSL shared-only builds are not supported; include static and shared'
+  # Keep installed programs pointed at this isolated prefix when shared
+  # libraries are enabled; otherwise the dynamic loader may choose the host's
+  # libssl/libcrypto first.
+  local -a configure_args=(--prefix="$prefix" --openssldir="$prefix/ssl" no-tests "-Wl,-rpath,$prefix/lib")
+  if (( shared == 1 )); then
+    # OpenSSL creates both shared libraries and static archives in this mode.
+    configure_args+=(shared)
+  else
+    configure_args+=(no-shared)
+  fi
+  # OpenSSL does not remove artifacts from a previous library-mode build.
+  # Since this prefix contains only generated OpenSSL output, clear it so a
+  # later static-only configuration cannot leave stale shared libraries.
+  rm -rf -- "$prefix"
+  mkdir -p "$prefix"
+  rm -f "$dir/Makefile"
+  (cd "$dir" && "$src/Configure" "${configure_args[@]}")
+  (cd "$dir" && make -j"$JOBS")
+  (cd "$dir" && make install_sw install_ssldirs)
+}
+
+build_autotools() {
+  local project=$1 src dir prefix generated_src
+  src=$(source_dir "$project"); dir=$(prepare_build_dir "$project"); prefix=$(output_dir "$project")
+  mkdir -p "$prefix"
+  if [[ ! -x "$src/configure" || "$src/configure.ac" -nt "$src/configure" ]]; then
+    [[ -f "$src/configure.ac" ]] || die "$project requires configure or configure.ac"
+    # Regenerate autotools files in a temporary build copy so the downloaded
+    # Git checkout remains clean and reusable.
+    generated_src="$dir/source"
+    rm -rf -- "$generated_src"
+    mkdir -p "$generated_src"
+    (cd "$src" && git archive --format=tar HEAD) | tar -x -C "$generated_src"
+    src="$generated_src"
+    if [[ -x "$src/autogen.sh" ]]; then
+      (cd "$src" && ./autogen.sh)
+    else
+      command -v autoreconf >/dev/null 2>&1 || die "autoreconf is required to regenerate $project"
+      (cd "$src" && autoreconf -fi)
+    fi
+  fi
+  case "$project" in
+    openssh)
+      (cd "$dir" && LDFLAGS="-Wl,-rpath,$(output_dir openssl)/lib" "$src/configure" \
+        --prefix="$prefix" \
+        --sysconfdir="$prefix/etc/ssh" \
+        --with-ssl-dir="$(output_dir openssl)" \
+        --with-privsep-path="$prefix/var/empty" \
+        --with-pid-dir="$prefix/var/run")
+      ;;
+    strongswan)
+      local -a configure_args
+      local plugin plugin_count=0
+      configure_args=(--prefix="$prefix" --sysconfdir="$prefix/etc" --disable-defaults --disable-stroke --with-openssl="$(output_dir openssl)")
+      while IFS= read -r plugin; do
+        [[ "$plugin" =~ ^[a-zA-Z0-9_-]+$ ]] || die "invalid strongswan plugin name: $plugin"
+        configure_args+=( "--enable-$plugin" )
+        plugin_count=$((plugin_count + 1))
+      done < <(project_plugins "$project")
+      (( plugin_count > 0 )) || die 'strongswan requires at least one plugin in configure.yaml'
+      # StrongSwan plugin selection is driven entirely by configure.yaml.
+      # For example, the plugin name vici becomes --enable-vici here.
+      (cd "$dir" && "$src/configure" "${configure_args[@]}")
+      ;;
+    *) die "no autotools configuration for project: $project" ;;
+  esac
+  (cd "$dir" && make -j"$JOBS")
+  (cd "$dir" && make install)
+}
+
+build_python() {
+  local project=$1 src prefix venv app
+  src=$(source_dir "$project"); prefix=$(output_dir "$project"); venv="$prefix/venv"; app="$prefix/app"
+  mkdir -p "$prefix"
+  python3 -m venv "$venv"
+  if [[ "$project" != strongman ]]; then
+    if [[ -f "$src/requirements.txt" ]]; then
+      "$venv/bin/python" -m pip install -r "$src/requirements.txt"
+    fi
+    if [[ -f "$src/pyproject.toml" || -f "$src/setup.py" ]]; then
+      "$venv/bin/python" -m pip install "$src"
+    else
+      warn "$project has no pyproject.toml or setup.py; source is available at $src"
+    fi
+    return
+  fi
+
+  # StrongMan's setup.py is an installer CLI, not a setuptools package.
+  # Copying it to output/app keeps its SQLite DB, generated keys, and collected
+  # static files out of sources/ while preserving the downloaded Git checkout.
+  rm -rf -- "$app"
+  cp -a "$src" "$app"
+  apply_project_patches "$project" "$app"
+  "$venv/bin/python" -m pip install -r "$app/requirements.txt"
+  (cd "$app" && "$venv/bin/python" manage.py migrate --settings=strongMan.settings.local)
+  (cd "$app" && "$venv/bin/python" manage.py loaddata initial_data.json --settings=strongMan.settings.local)
+  (cd "$app" && "$venv/bin/python" manage.py collectstatic --settings=strongMan.settings.production --noinput)
+}
+
+run_openssh_server() {
+  local output=$1
+  shift || true
+  local config="$output/etc/ssh/sshd_config"
+  local runtime="$output/var/run"
+  local pid_path="$runtime/sshd.pid"
+  local log_path="$runtime/sshd.log"
+  local port bind password_authentication kbd_interactive_authentication
+  local pubkey_authentication permit_root_login permit_tty allow_tcp_forwarding
+  local x11_forwarding use_dns banner kex_algorithms macs ciphers
+  local -a server_options
+  local pid command_line attempt
+
+  port=$(project_section_value openssh server port)
+  bind=$(project_section_value openssh server bind)
+  password_authentication=$(project_section_value openssh server password_authentication)
+  kbd_interactive_authentication=$(project_section_value openssh server kbd_interactive_authentication)
+  pubkey_authentication=$(project_section_value openssh server pubkey_authentication)
+  permit_root_login=$(project_section_value openssh server permit_root_login)
+  permit_tty=$(project_section_value openssh server permit_tty)
+  allow_tcp_forwarding=$(project_section_value openssh server allow_tcp_forwarding)
+  x11_forwarding=$(project_section_value openssh server x11_forwarding)
+  use_dns=$(project_section_value openssh server use_dns)
+  banner=$(project_section_value openssh server banner)
+  kex_algorithms=$(project_section_value openssh server kex_algorithms)
+  macs=$(project_section_value openssh server macs)
+  ciphers=$(project_section_value openssh server ciphers)
+  port=${port:-2224}
+  bind=${bind:-0.0.0.0}
+  password_authentication=${password_authentication:-no}
+  kbd_interactive_authentication=${kbd_interactive_authentication:-no}
+  pubkey_authentication=${pubkey_authentication:-yes}
+  permit_root_login=${permit_root_login:-no}
+  permit_tty=${permit_tty:-yes}
+  allow_tcp_forwarding=${allow_tcp_forwarding:-yes}
+  x11_forwarding=${x11_forwarding:-no}
+  use_dns=${use_dns:-no}
+  banner=${banner:-none}
+  kex_algorithms=${kex_algorithms:-default}
+  macs=${macs:-default}
+  ciphers=${ciphers:-default}
+
+  [[ "$port" =~ ^[1-9][0-9]{0,4}$ ]] || die "invalid OpenSSH sshd_port: $port"
+  (( port <= 65535 )) || die "invalid OpenSSH sshd_port: $port"
+  [[ -n "$bind" && "$bind" != *[[:space:]]* ]] || die "invalid OpenSSH sshd_bind: $bind"
+  case "$password_authentication" in yes|no) ;; *) die 'sshd_password_authentication must be yes or no' ;; esac
+  case "$kbd_interactive_authentication" in yes|no) ;; *) die 'sshd_kbd_interactive_authentication must be yes or no' ;; esac
+  case "$pubkey_authentication" in yes|no) ;; *) die 'pubkey_authentication must be yes or no' ;; esac
+  case "$permit_root_login" in yes|no|prohibit-password) ;; *) die 'permit_root_login must be yes, no, or prohibit-password' ;; esac
+  case "$permit_tty" in yes|no) ;; *) die 'permit_tty must be yes or no' ;; esac
+  case "$allow_tcp_forwarding" in yes|no|all|local|remote) ;; *) die 'allow_tcp_forwarding has an invalid value' ;; esac
+  case "$x11_forwarding" in yes|no) ;; *) die 'x11_forwarding must be yes or no' ;; esac
+  case "$use_dns" in yes|no) ;; *) die 'use_dns must be yes or no' ;; esac
+  [[ "$banner" != *[[:space:]]* ]] || die 'server banner path must not contain whitespace'
+  [[ -x "$output/sbin/sshd" ]] || die 'openssh server is not built; run ./crypton build openssh'
+  [[ -f "$config" ]] || die "OpenSSH server configuration not found: $config"
+  if [[ "$banner" != none && "$banner" != /* ]]; then
+    banner="$SCRIPT_DIR/$banner"
+  fi
+  if [[ "$banner" != none ]]; then
+    [[ -f "$banner" ]] || die "OpenSSH banner file not found: $banner"
+  fi
+
+  mkdir -p "$runtime" "$output/var/empty"
+  server_options=(-p "$port" -o "ListenAddress=$bind" -o "PidFile=$pid_path"
+    -o "PasswordAuthentication=$password_authentication"
+    -o "KbdInteractiveAuthentication=$kbd_interactive_authentication"
+    -o "PubkeyAuthentication=$pubkey_authentication"
+    -o "PermitRootLogin=$permit_root_login"
+    -o "PermitTTY=$permit_tty"
+    -o "AllowTcpForwarding=$allow_tcp_forwarding"
+    -o "X11Forwarding=$x11_forwarding"
+    -o "UseDNS=$use_dns")
+  [[ "$kex_algorithms" == default ]] || server_options+=(-o "KexAlgorithms=$kex_algorithms")
+  [[ "$macs" == default ]] || server_options+=(-o "MACs=$macs")
+  [[ "$ciphers" == default ]] || server_options+=(-o "Ciphers=$ciphers")
+  [[ "$banner" == none ]] || server_options+=(-o "Banner=$banner")
+  "$output/sbin/sshd" -t -f "$config" "${server_options[@]}"
+  # configure.yaml is read on every run. Restart an existing crypton daemon
+  # after validation so changed runtime settings take effect without a rebuild.
+  if [[ -f "$pid_path" ]]; then
+    stop_project openssh
+  fi
+  "$output/sbin/sshd" -f "$config" "${server_options[@]}" -E "$log_path" "$@"
+  for (( attempt = 0; attempt < 50; attempt++ )); do
+    [[ -s "$pid_path" ]] && break
+    sleep 0.1
+  done
+  [[ -s "$pid_path" ]] || die "OpenSSH server failed to start; see $log_path"
+  pid=$(head -n 1 "$pid_path")
+  [[ "$pid" =~ ^[0-9]+$ ]] || die "invalid OpenSSH PID file: $pid_path"
+  kill -0 "$pid" 2>/dev/null || die "OpenSSH server exited during startup; see $log_path"
+  command_line=$(ps -p "$pid" -o args=)
+  case "$command_line" in
+    *"$output/sbin/sshd"*) ;;
+    *) die "refusing to accept unexpected OpenSSH PID $pid" ;;
+  esac
+  info "OpenSSH server started on ${bind}:${port}"
+  info "OpenSSH PID file: $pid_path"
+}
+
+run_openssh_client() {
+  local output=$1
+  shift || true
+  local kex_algorithms macs ciphers host_key_algorithms preferred_authentications
+  local password_authentication kbd_interactive_authentication strict_host_key_checking
+  local -a client_options
+  kex_algorithms=$(project_section_value openssh client kex_algorithms)
+  macs=$(project_section_value openssh client macs)
+  ciphers=$(project_section_value openssh client ciphers)
+  host_key_algorithms=$(project_section_value openssh client host_key_algorithms)
+  preferred_authentications=$(project_section_value openssh client preferred_authentications)
+  password_authentication=$(project_section_value openssh client password_authentication)
+  kbd_interactive_authentication=$(project_section_value openssh client kbd_interactive_authentication)
+  strict_host_key_checking=$(project_section_value openssh client strict_host_key_checking)
+  client_options=()
+  [[ -z "$kex_algorithms" || "$kex_algorithms" == default ]] || client_options+=(-o "KexAlgorithms=$kex_algorithms")
+  [[ -z "$macs" || "$macs" == default ]] || client_options+=(-o "MACs=$macs")
+  [[ -z "$ciphers" || "$ciphers" == default ]] || client_options+=(-o "Ciphers=$ciphers")
+  [[ -z "$host_key_algorithms" || "$host_key_algorithms" == default ]] || client_options+=(-o "HostKeyAlgorithms=$host_key_algorithms")
+  [[ -z "$preferred_authentications" ]] || client_options+=(-o "PreferredAuthentications=$preferred_authentications")
+  [[ -z "$password_authentication" ]] || client_options+=(-o "PasswordAuthentication=$password_authentication")
+  [[ -z "$kbd_interactive_authentication" ]] || client_options+=(-o "KbdInteractiveAuthentication=$kbd_interactive_authentication")
+  [[ -z "$strict_host_key_checking" ]] || client_options+=(-o "StrictHostKeyChecking=$strict_host_key_checking")
+  "$output/bin/ssh" "${client_options[@]}" "$@"
+}
+
+build_project() {
+  local project=$1 repo version system
+  repo=$(project_value "$project" repo)
+  version=$(project_value "$project" version)
+  system=$(project_value "$project" build_system)
+  [[ -n "$repo" && -n "$version" && -n "$system" ]] || die "incomplete configuration for project: $project"
+  clone_project "$project" "$repo" "$version"
+  mkdir -p "$(output_dir "$project")"
+  case "$system" in
+    openssl) build_openssl "$project" ;;
+    autotools) build_autotools "$project" ;;
+    python) build_python "$project" ;;
+    *) die "unsupported build_system '$system' for $project" ;;
+  esac
+  info "built $project in $(output_dir "$project")"
+}
+
+build_all() {
+  local requested=${1:-all} project found=0
+  if [[ "$requested" == all ]]; then
+    while IFS= read -r project; do
+      [[ -n "$project" ]] || continue
+      build_project "$project"
+    done < <(project_names)
+    return
+  fi
+  while IFS= read -r project; do
+    if [[ "$project" == "$requested" ]]; then found=1; break; fi
+  done < <(project_names)
+  (( found == 1 )) || die "unknown project '$requested'"
+  build_project "$requested"
+}
+
+# Check that a name is present in configure.yaml before using it as a path.
+project_is_known() {
+  local requested=$1 project
+  while IFS= read -r project; do
+    [[ "$project" == "$requested" ]] && return 0
+  done < <(project_names)
+  return 1
+}
+
+# Clean only directories generated by crypton. Source checkouts are retained,
+# which makes a later build faster and avoids deleting a user's Git history.
+clean_project() {
+  local project=$1 build_path output_path
+  project_is_known "$project" || die "unknown project '$project'"
+  build_path=$(build_dir "$project")
+  output_path=$(output_dir "$project")
+  [[ -n "$build_path" && -n "$output_path" ]] || die "invalid clean paths for $project"
+  [[ "$build_path" != "$SCRIPT_DIR" && "$output_path" != "$SCRIPT_DIR" ]] || die 'refusing to clean the repository root'
+  if [[ -e "$build_path" ]]; then
+    info "removing $build_path"
+    rm -rf -- "$build_path"
+  fi
+  if [[ -e "$output_path" ]]; then
+    info "removing $output_path"
+    rm -rf -- "$output_path"
+  fi
+}
+
+clean_all() {
+  local requested=all project
+  if (( $# > 0 )); then
+    requested=$1
+  fi
+  if [[ "$requested" == all ]]; then
+    while IFS= read -r project; do
+      [[ -n "$project" ]] || continue
+      clean_project "$project"
+    done < <(project_names)
+  else
+    clean_project "$requested"
+  fi
+}
+
+clean_source_project() {
+  local project=$1 force=${2:-0} source_path changes
+  project_is_known "$project" || die "unknown project '$project'"
+  source_path=$(source_dir "$project")
+  [[ -n "$source_path" && "$source_path" != "$SCRIPT_DIR" && "$source_path" != / ]] || die 'refusing to remove an unsafe source path'
+  [[ -e "$source_path" ]] || { info "$project source checkout does not exist"; return; }
+
+  if [[ -d "$source_path/.git" && "$force" != 1 ]]; then
+    changes=$(git -C "$source_path" status --porcelain --untracked-files=all || true)
+    [[ -z "$changes" ]] || die "$source_path has local changes; use clean-sources $project --force to remove it"
+  fi
+
+  info "removing source checkout: $source_path"
+  rm -rf -- "$source_path"
+}
+
+clean_sources() {
+  local requested=all force=0 project arg
+  while (( $# > 0 )); do
+    arg=$1
+    shift
+    case "$arg" in
+      all) requested=all ;;
+      --force) force=1 ;;
+      *) requested=$arg ;;
+    esac
+  done
+
+  if [[ "$requested" == all ]]; then
+    while IFS= read -r project; do
+      [[ -n "$project" ]] || continue
+      clean_source_project "$project" "$force"
+    done < <(project_names)
+  else
+    clean_source_project "$requested" "$force"
+  fi
+}
+
+run_project() {
+  local project=${1:-} output
+  shift || true
+  [[ -n "$project" ]] || die 'run requires a project name (openssl, openssh, strongswan, or strongman)'
+  output=$(output_dir "$project")
+  case "$project" in
+    openssl)
+      [[ -x "$output/bin/openssl" ]] || die 'openssl is not built; run ./crypton build openssl'
+      "$output/bin/openssl" "${@:-version}"
+      ;;
+    openssh)
+      [[ -x "$output/bin/ssh" && -x "$output/sbin/sshd" ]] || die 'openssh is not built; run ./crypton build openssh'
+      if (( $# == 0 )); then
+        run_openssh_server "$output"
+      elif [[ "$1" == server ]]; then
+        shift
+        run_openssh_server "$output" "$@"
+      elif [[ "$1" == client ]]; then
+        shift
+        if (( $# == 0 )); then "$output/bin/ssh" -V; else run_openssh_client "$output" "$@"; fi
+      else
+        run_openssh_client "$output" "$@"
+      fi
+      ;;
+    strongswan)
+      [[ -x "$output/sbin/swanctl" || -x "$output/bin/swanctl" ]] || die 'strongswan is not built; run ./crypton build strongswan'
+      local swanctl="$output/sbin/swanctl"
+      [[ -x "$swanctl" ]] || swanctl="$output/bin/swanctl"
+      if (( $# == 0 )); then "$swanctl" --version; else "$swanctl" "$@"; fi
+      ;;
+    strongman)
+      [[ -x "$output/venv/bin/python" ]] || die 'strongman is not built; run ./crypton build strongman'
+      [[ -d "$output/app/strongMan" ]] || die 'strongman application is not installed; run ./crypton build strongman'
+      # Run Gunicorn directly with the output venv. Upstream run.py assumes a
+      # source-local env/ directory, which would bypass crypton's isolation.
+      (cd "$output/app" && "$output/venv/bin/python" -m gunicorn --workers="${CRYPTON_STRONGMAN_WORKERS:-1}" --bind="${CRYPTON_STRONGMAN_BIND:-0.0.0.0:1515}" --pid="$(pid_file strongman)" --env DJANGO_SETTINGS_MODULE=strongMan.settings.local strongMan.wsgi:application "$@")
+      ;;
+    *) die "unknown project '$project'" ;;
+  esac
+}
+
+stop_project() {
+  local project=${1:-} output pid_path pid command_line attempt expected_process label
+  case "$project" in
+    strongman)
+      expected_process='strongMan.wsgi:application'
+      label=strongman
+      ;;
+    openssh)
+      expected_process='sshd'
+      label='OpenSSH server'
+      ;;
+    *) die 'stop supports strongman and openssh' ;;
+  esac
+  output=$(output_dir "$project")
+  if [[ "$project" == openssh ]]; then
+    pid_path="$output/var/run/sshd.pid"
+  else
+    pid_path=$(pid_file "$project")
+  fi
+  [[ -f "$pid_path" ]] || die "$label is not running (PID file not found: $pid_path)"
+
+  pid=$(head -n 1 "$pid_path")
+  [[ "$pid" =~ ^[0-9]+$ ]] || die "invalid Strongman PID file: $pid_path"
+  if ! kill -0 "$pid" 2>/dev/null; then
+    rm -f -- "$pid_path"
+    info "removed stale $label PID file; $label was not running"
+    return
+  fi
+
+  command_line=$(ps -p "$pid" -o args=)
+  if [[ "$project" == openssh ]]; then
+    case "$command_line" in
+      *"$output/sbin/sshd"*) ;;
+      *) die "refusing to stop PID $pid: it is not the crypton OpenSSH server" ;;
+    esac
+  else
+    case "$command_line" in
+      *"$output/venv/bin/python -m gunicorn"*"$expected_process"*) ;;
+      *) die "refusing to stop PID $pid: it is not the crypton Strongman process" ;;
+    esac
+  fi
+
+  info "stopping $label (PID $pid)"
+  kill -TERM "$pid"
+  for (( attempt = 0; attempt < 100; attempt++ )); do
+    if ! kill -0 "$pid" 2>/dev/null; then
+      rm -f -- "$pid_path"
+      info "$label stopped"
+      return
+    fi
+    sleep 0.1
+  done
+
+  warn "$label did not stop gracefully; sending SIGKILL"
+  kill -KILL "$pid"
+  rm -f -- "$pid_path"
+  info "$label stopped"
+}
+
+usage() {
+  cat <<'EOF'
+Usage: ./crypton <command> [project] [args...]
+
+Commands:
+  install [--dry-run]     Install host dependencies for this OS
+  build [all|project]     Clone and build one project or all projects
+  clean [all|project]     Remove build/output trees; preserve source checkouts
+  clean-sources [all|project] [--force]
+                           Remove downloaded source checkouts
+  run <project> [args]    Run a built project's command
+                           OpenSSH defaults to its configured sshd server;
+                           use 'client' or 'server' explicitly when needed
+  stop <project>           Stop a running Strongman or OpenSSH server
+  list                    List projects configured in configure.yaml
+  help                    Show this help
+
+Environment:
+  CRYPTON_JOBS=N          Number of parallel build jobs (default: CPU count)
+  CRYPTON_CONFIG=PATH     Alternate configure.yaml path
+  CRYPTON_REQUIREMENTS=PATH  Alternate requirements.yaml path
+EOF
+}
+
+main() {
+  require_file "$CONFIG_FILE"
+  local command=${1:-help}
+  shift || true
+  case "$command" in
+    install) install_requirements "$@" ;;
+    clean) clean_all "${1:-all}" ;;
+    clean-sources|clean-source) clean_sources "$@" ;;
+    build) build_all "${1:-all}" ;;
+    run) run_project "$@" ;;
+    stop) stop_project "$@" ;;
+    list) project_names ;;
+    help|-h|--help) usage ;;
+    *) usage >&2; die "unknown command: $command" ;;
+  esac
+}
+
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
+fi

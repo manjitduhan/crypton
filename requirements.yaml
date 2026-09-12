@@ -1,0 +1,42 @@
+# Host dependencies used by crypton install.
+# Package names are intentionally grouped by OS package manager.
+# version: distribution-managed means the host package manager chooses the
+# compatible version. Pin versions here only when a reproducible host image
+# requires it.
+
+requirements:
+  - os: debian
+    manager: apt-get
+    package: "build-essential git ca-certificates pkg-config autoconf automake libtool cmake ninja-build meson perl python3 python3-pip python3-venv libssl-dev zlib1g-dev libpam0g-dev libedit-dev libcap-dev libsystemd-dev libnm-dev libgmp-dev flex bison gperf gettext libcurl4-openssl-dev libxml2-dev libsqlite3-dev libncurses-dev libfido2-dev libkrb5-dev libldap2-dev libpcre2-dev"
+    version: distribution-managed
+    remarks: Debian, Ubuntu, Linux Mint, Kali, and other apt-based hosts
+
+  - os: fedora
+    manager: dnf
+    package: "gcc gcc-c++ make git ca-certificates pkgconf-pkg-config autoconf automake libtool cmake ninja-build meson perl python3 python3-pip openssl-devel zlib-devel pam-devel libedit-devel libcap-devel systemd-devel NetworkManager-libnm-devel gmp-devel flex bison gperf gettext-devel libcurl-devel libxml2-devel sqlite-devel ncurses-devel libfido2-devel krb5-devel openldap-devel pcre2-devel"
+    version: distribution-managed
+    remarks: Fedora, RHEL, CentOS Stream, Rocky Linux, and AlmaLinux
+
+  - os: arch
+    manager: pacman
+    package: "base-devel git ca-certificates pkgconf autoconf automake libtool cmake ninja meson perl python python-pip openssl zlib pam libedit libcap systemd libnm gmp flex bison gperf gettext curl libxml2 sqlite ncurses libfido2 krb5 openldap pcre2"
+    version: distribution-managed
+    remarks: Arch Linux and compatible distributions
+
+  - os: alpine
+    manager: apk
+    package: "build-base git ca-certificates pkgconf autoconf automake libtool cmake ninja meson perl python3 py3-pip openssl-dev zlib-dev linux-pam-dev libedit-dev libcap-dev systemd-dev gmp-dev flex bison gperf gettext-dev curl-dev libxml2-dev sqlite-dev ncurses-dev libfido2-dev krb5-dev openldap-dev pcre2-dev"
+    version: distribution-managed
+    remarks: Alpine Linux
+
+  - os: macos
+    manager: brew
+    package: "git ca-certificates pkg-config autoconf automake libtool cmake ninja meson perl gperf openssl@3 zlib gettext curl libxml2 sqlite ncurses libfido2 krb5 openldap pcre2 python"
+    version: homebrew-managed
+    remarks: macOS; install Homebrew first if brew is not available
+
+  - os: freebsd
+    manager: pkg
+    package: "git ca_root_nss pkgconf autoconf automake libtool cmake ninja meson perl5 python3 openssl zlib-ng pam_cap libedit libcap gmp flex bison gettext curl libxml2 sqlite3 ncurses fido2 krb5 openldap pcre2"
+    version: ports-managed
+    remarks: FreeBSD; package names can vary with the selected ports tree

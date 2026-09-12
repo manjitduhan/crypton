@@ -1,0 +1,128 @@
+Crypto
+======
+
+Crypto is a source-build workspace for OpenSSL, OpenSSH, strongSwan, and
+strongMan. Its command-line entry point is `crypton`.
+
+The project configuration is in [configure.yaml](configure.yaml), and the
+host package requirements are in [requirements.yaml](requirements.yaml).
+Versions in `configure.yaml` are Git refs. Use tags or commit hashes for
+repeatable builds; a branch such as `main` follows that branch when rebuilt.
+
+Quick start
+-----------
+
+    ./crypton install
+    ./crypton build
+    ./crypton list
+    ./crypton run openssl
+
+`install` detects the operating system and uses its package manager. It
+currently supports Debian/Ubuntu-style systems, Fedora/RHEL-style systems,
+Arch, Alpine, macOS/Homebrew, and FreeBSD. Package installation may require
+`sudo`; macOS requires Homebrew. Use `./crypton install --dry-run` to inspect
+the detected OS and package list without changing the host.
+
+`build` accepts `all` (the default) or one project name:
+
+    ./crypton build openssl
+    ./crypton build openssh
+    ./crypton build strongswan
+    ./crypton build strongman
+
+clean removes only the selected project's generated build/ and output/
+directories. It preserves sources/, including each checkout's Git history:
+
+    ./crypton clean openssl
+    ./crypton clean
+
+To remove downloaded source checkouts as well, use the explicit
+`clean-sources` command:
+
+    ./crypton clean-sources strongman
+    ./crypton clean-sources
+
+This permanently removes the selected local source directories; they can be
+downloaded again by the next build. Checkouts with local changes are protected
+unless `--force` is supplied:
+
+    ./crypton clean-sources strongman --force
+
+Source checkouts go under `sources/`, intermediate files under `build/`, and
+installed results under `output/<project>/`. These directories are intended to
+remain outside the host's normal `/usr` or `/etc` installation paths.
+
+`run` needs a project name. OpenSSL and StrongSwan perform a safe version check
+when no additional arguments are supplied:
+
+    ./crypton run openssl
+    ./crypton run strongswan
+
+For OpenSSH, the no-argument form starts the configured `sshd` server:
+
+    ./crypton run openssh
+
+The OpenSSH settings are in the `client` and `server` sections of
+`configure.yaml`. KEX, MAC, and cipher lists are configured independently for
+each side and should share at least one algorithm. The server section also
+controls the port, bind address, password and keyboard-interactive
+authentication, host-key authentication, forwarding, DNS lookup, and banner.
+Use `./crypton run openssh client [args]` to run the SSH client, or
+`./crypton run openssh server [sshd args]` for explicit server control. The
+server runs as a daemon and keeps its PID, log, host keys, and
+privilege-separation directory under `output/openssh`. Runtime changes in
+`configure.yaml` are applied by rerunning `./crypton run openssh`; the existing
+crypton OpenSSH daemon is validated, stopped, and restarted automatically.
+
+For strongMan, additional arguments are passed to its server.
+
+To expose the strongMan UI on the local network, run:
+
+    ./crypton run strongman
+
+The server runs in the foreground. Stop it from another terminal with:
+
+    ./crypton stop strongman
+
+The stop command uses a PID file and verifies that the process belongs to the
+crypton StrongMan installation before stopping it.
+
+The launcher binds strongMan to all interfaces on port 1515 by default, so it
+automatically follows the Raspberry Pi's current network addresses. Set
+`CRYPTON_STRONGMAN_BIND=127.0.0.1:1515` to restrict it to this machine, or set
+the variable to another address and port. The bundled strongMan patch accepts
+all host names by default; `CRYPTON_STRONGMAN_ALLOWED_HOSTS` can be used to
+provide a comma-separated restricted host list.
+
+For StrongSwan, add plugin names under its plugins list. Each name is
+translated into a --enable-<plugin> configure option; for example, vici
+becomes --enable-vici. The list is used with --disable-defaults, so only the
+selected StrongSwan plugins are built.
+
+Configuration
+-------------
+
+Add or change a project in `configure.yaml` with:
+
+    project-name:
+      repo: https://github.com/owner/repository.git
+      version: tag-or-commit
+      build_system: openssl | autotools | python
+      plugins: []
+
+The build script currently has project-specific configure options for the four
+initial projects. New build systems need a corresponding handler in
+`crypton`.
+
+OpenSSL library outputs are configured per project with the `libraries` list.
+Use `static` for static archives and `shared` for shared libraries. OpenSSL's
+shared build also produces the static archives, so listing both produces both
+forms under `output/openssl`. Shared OpenSSL programs use the libraries from
+that isolated prefix at runtime:
+
+    libraries:
+      - static
+      - shared
+
+Useful environment variables are `CRYPTON_JOBS`, `CRYPTON_CONFIG`, and
+`CRYPTON_REQUIREMENTS`.
