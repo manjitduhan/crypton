@@ -1,13 +1,13 @@
 Crypto
 ======
 
-Crypto is a source-build workspace for OpenSSL, OpenSSH, strongSwan, and
-strongMan. Its command-line entry point is `crypton`.
+Crypto is a source-build workspace for OpenSSL, OpenSSH, strongSwan, StrongMan,
+and PKI. Its command-line entry point is `crypton`.
 
-The project configuration is in [configure.yaml](configure.yaml), and the
-host package requirements are in [requirements.yaml](requirements.yaml).
-Versions in `configure.yaml` are Git refs. Use tags or commit hashes for
-repeatable builds; a branch such as `main` follows that branch when rebuilt.
+Workspace paths are in [configure.yaml](configure.yaml), host package
+requirements are in [requirements.yaml](requirements.yaml), and each project
+owns its configuration in `src/<project>/configure.yaml`. Versions are Git
+refs; use tags or commit hashes for repeatable builds.
 
 Quick start
 -----------
@@ -29,12 +29,33 @@ the detected OS and package list without changing the host.
     ./crypton build openssh
     ./crypton build strongswan
     ./crypton build strongman
+    ./crypton build pki
 
-clean removes only the selected project's generated build/ and output/
-directories. It preserves sources/, including each checkout's Git history:
+Projects declare build dependencies in their own `configure.yaml`. Crypton
+builds those dependencies first. The current build relationships are:
+
+    openssh   -> openssl
+    strongswan -> openssl
+    pki       -> openssl
+
+StrongMan uses strongSwan at runtime through VICI, but does not need to build
+strongSwan itself. Start strongSwan before using StrongMan features that access
+the VPN daemon.
+
+If `depends_on` is omitted, blank, `None`, or `null`, the project has no build
+dependency. Multiple dependencies may be separated by commas.
+
+`clean` removes generated build/output data for conventional projects and
+preserves downloaded sources. The PKI project is intentionally different: its
+generated authorities and private keys are preserved and are never deleted by
+`clean`:
 
     ./crypton clean openssl
     ./crypton clean
+
+PKI authority output must be replaced explicitly with:
+
+    ./crypton run pki generate --force
 
 To remove downloaded source checkouts as well, use the explicit
 `clean-sources` command:
@@ -49,11 +70,13 @@ unless `--force` is supplied:
     ./crypton clean-sources strongman --force
 
 Source checkouts go under `sources/`, intermediate files under `build/`, and
-installed results under `output/<project>/`. These directories are intended to
-remain outside the host's normal `/usr` or `/etc` installation paths.
+installed results under `output/<project>/`. Each project output directory is
+the install-prefix bundle for that project; copy its contents when deploying,
+for example `cp -a output/strongswan/. /target/`. Keeping one prefix per
+project prevents files from different projects overwriting one another.
 
-`run` needs a project name. OpenSSL and StrongSwan perform a safe version check
-when no additional arguments are supplied:
+`run` needs a project name. OpenSSL performs a safe version check when no
+additional arguments are supplied:
 
     ./crypton run openssl
     ./crypton run strongswan
@@ -63,18 +86,18 @@ For OpenSSH, the no-argument form starts the configured `sshd` server:
     ./crypton run openssh
 
 The OpenSSH settings are in the `client` and `server` sections of
-`configure.yaml`. KEX, MAC, and cipher lists are configured independently for
-each side and should share at least one algorithm. The server section also
+`src/openssh/configure.yaml`. KEX, MAC, and cipher lists are configured
+independently for each side and should share at least one algorithm. The server section also
 controls the port, bind address, password and keyboard-interactive
 authentication, host-key authentication, forwarding, DNS lookup, and banner.
 Use `./crypton run openssh client [args]` to run the SSH client, or
 `./crypton run openssh server [sshd args]` for explicit server control. The
 server runs as a daemon and keeps its PID, log, host keys, and
 privilege-separation directory under `output/openssh`. Runtime changes in
-`configure.yaml` are applied by rerunning `./crypton run openssh`; the existing
+`src/openssh/configure.yaml` are applied by rerunning `./crypton run openssh`; the existing
 crypton OpenSSH daemon is validated, stopped, and restarted automatically.
 
-For strongMan, additional arguments are passed to its server.
+For StrongMan, additional arguments are passed to Gunicorn.
 
 To expose the strongMan UI on the local network, run:
 
@@ -90,31 +113,164 @@ crypton StrongMan installation before stopping it.
 The launcher binds strongMan to all interfaces on port 1515 by default, so it
 automatically follows the Raspberry Pi's current network addresses. Set
 `CRYPTON_STRONGMAN_BIND=127.0.0.1:1515` to restrict it to this machine, or set
-the variable to another address and port. The bundled strongMan patch accepts
-all host names by default; `CRYPTON_STRONGMAN_ALLOWED_HOSTS` can be used to
-provide a comma-separated restricted host list.
+the variable to another address and port. Django's accepted host names, bind
+address, and worker count are configured in `src/strongman/configure.yaml`;
+`allowed_hosts` is `*` by default so the UI follows the host's current network
+address. The
+`CRYPTON_STRONGMAN_ALLOWED_HOSTS` environment variable can override it with a
+comma-separated restricted host list for one run. The same file contains the
+initial StrongMan administrator under `admin`; the account is created or
+updated during the build. Change the example password before deploying the
+service. `vici_socket` points StrongMan at the private VICI socket created by
+the crypton StrongSwan launcher. The log endpoint uses bounded polling so an
+idle log page does not block a Gunicorn worker until timeout.
 
-For StrongSwan, add plugin names under its plugins list. Each name is
-translated into a --enable-<plugin> configure option; for example, vici
-becomes --enable-vici. The list is used with --disable-defaults, so only the
-selected StrongSwan plugins are built.
+For strongSwan, configure `prefix_path`, `toolchain_path`, and the plugin list
+in `src/strongswan/configure.yaml`. Relative paths are resolved from the
+workspace root; `toolchain_path` should contain the compiler tools. Charon and
+swanctl are always built, while each plugin becomes a `--enable-<name>` option.
+The list is used with `--disable-defaults`, so only the selected StrongSwan
+features are built. The build uses the project's OpenSSL dependency and runs
+serially to avoid the known VICI dependency-ordering issue in some Automake
+versions.
+
+PKI is a separate project. Its certificate-authority hierarchy is defined in
+`src/pki/pki.json`; each authority has its own output directory, root CA,
+intermediate CAs nested below its root CA, devices, and deployable bundles.
+PKI depends only on OpenSSL; it does not depend on strongSwan or its runtime
+tools. The project uses Crypton's OpenSSL bundle when available and otherwise
+can use a system `openssl` executable.
+
+`src/pki/configure.yaml` is only Crypton project metadata. It declares the PKI
+project and its OpenSSL dependency. The certificate configuration is entirely
+in `src/pki/pki.json`.
+
+The PKI JSON hierarchy is:
+
+    pki
+    └── authorities[]
+        └── root_ca
+            └── intermediate_cas[]
+                └── devices[]
+
+Each authority must provide a unique `name` and `output_dir`. Each certificate
+definition contains its own validity, key algorithm/size or curve, signature
+digest, subject, SANs, and usage. This keeps unrelated authorities and their
+credentials isolated from one another.
+
+Validate the PKI configuration with:
+
+    ./crypton build pki
+
+Generate the configured authorities and device certificates with:
+
+    ./crypton run pki generate
+
+Generation refuses to replace an existing authority. To intentionally
+regenerate the configured authority trees, use the explicit force option:
+
+    ./crypton run pki generate --force
+
+List configured devices with:
+
+    ./crypton run pki list
+
+Install one generated device into a target strongSwan `swanctl` directory.
+The command copies the device private key to `private/`, the device
+certificate to `x509/`, and the intermediate and root CA certificates to
+`x509ca/`. The public key and full chain are also preserved under
+`public/` and `chains/`, respectively, without placing non-certificate files
+in directories that swanctl scans for credentials:
+
+    sudo ./crypton run pki install \
+        --authority server \
+        --device vpn-server \
+        --swanctl-dir /etc/swanctl
+
+The same operation is available as the standalone `pki_installer` script and
+requires only the target `swanctl` path and a generated bundle. This is useful
+when the target device does not contain the Crypton workspace:
+
+    sudo src/pki/pki_installer \
+        /etc/swanctl \
+        output/pki/server/bundles/vpn-server.tar.gz
+
+Or use it through crypton:
+
+    sudo ./crypton run pki install-bundle \
+        /etc/swanctl \
+        output/pki/server/bundles/vpn-server.tar.gz
+
+Each device has both a bundle directory and a portable `.tar.gz` archive:
+
+    output/pki/<authority>/bundles/<device>/
+    output/pki/<authority>/bundles/<device>.tar.gz
+
+The archive contains the device private/public key, device certificate,
+intermediate CA, root CA, and full certificate chain. `pki_installer` accepts
+either the directory or the archive. Root and intermediate CA private keys
+remain in the authority output and are never installed on a device.
+
+Running StrongSwan starts the project's `charon` daemon, not a system service:
+
+    ./crypton run strongswan
+    ./crypton run strongswan swanctl --list-sas
+    ./crypton stop strongswan
+
+The daemon reads `output/strongswan/etc/strongswan.conf`. Its PID file, VICI
+socket, and log are kept under `output/strongswan/var/`, so the launcher does
+not use `/etc/strongswan`, `/etc/ipsec`, `/var/run`, or a system-installed
+strongSwan instance. Because strongSwan is built against crypton's OpenSSL,
+deploy both `output/openssl/` and `output/strongswan/` to the same target
+prefix (for example, copy both contents into `/opt/crypton/`).
+
+Charon manages kernel IPsec state, so it needs Linux network capabilities. On
+a normal unprivileged account, start and stop it with:
+
+    sudo ./crypton run strongswan
+    sudo ./crypton stop strongswan
+
+For an unprivileged launcher, capabilities can instead be assigned to the
+installed charon binary (reapply them after rebuilding it):
+
+    sudo setcap cap_net_admin,cap_net_bind_service,cap_net_raw+ep output/strongswan/libexec/ipsec/charon
 
 Configuration
 -------------
 
-Add or change a project in `configure.yaml` with:
+Workspace configuration is intentionally split by responsibility:
 
-    project-name:
-      repo: https://github.com/owner/repository.git
-      version: tag-or-commit
-      build_system: openssl | autotools | python
-      plugins: []
+    configure.yaml
+        shared source/build/output paths
+    src/<project>/configure.yaml
+        repository, version, dependencies, and project-specific settings
+    src/<project>/compile.sh
+        project build and runtime implementation
 
-The build script currently has project-specific configure options for the four
-initial projects. New build systems need a corresponding handler in
-`crypton`.
+PKI also has project-specific runtime files:
 
-OpenSSL library outputs are configured per project with the `libraries` list.
+    src/pki/pki.json
+        certificate authority and device-certificate definitions
+    src/pki/pki.py
+        OpenSSL-backed generation and configuration-aware installation
+    src/pki/pki_installer
+        dependency-free bundle installer for target devices
+
+To add a project, create its directory under `src/` with a `compile.sh` and a
+`configure.yaml`. The launcher discovers it automatically. A project config
+has this shape:
+
+    project: example
+    repo: https://github.com/owner/repository.git
+    version: tag-or-commit
+    build_system: internal | openssl | autotools | python
+    depends_on: openssl
+
+The project script is responsible for interpreting any additional settings.
+Dependencies are built automatically before the requested project.
+
+OpenSSL library outputs are configured in `src/openssl/configure.yaml` with the
+`libraries` list.
 Use `static` for static archives and `shared` for shared libraries. OpenSSL's
 shared build also produces the static archives, so listing both produces both
 forms under `output/openssl`. Shared OpenSSL programs use the libraries from
@@ -124,5 +280,15 @@ that isolated prefix at runtime:
       - static
       - shared
 
-Useful environment variables are `CRYPTON_JOBS`, `CRYPTON_CONFIG`, and
-`CRYPTON_REQUIREMENTS`.
+Useful environment variables are:
+
+    CRYPTON_JOBS=N
+        Number of parallel build jobs; defaults to the host CPU count.
+    CRYPTON_CONFIG=PATH
+        Alternate workspace path configuration.
+    CRYPTON_REQUIREMENTS=PATH
+        Alternate host-requirements configuration.
+    CRYPTON_PROJECTS_DIR=PATH
+        Alternate directory containing project directories.
+    CRYPTON_OPENSSL_BIN=PATH
+        One-run OpenSSL executable override for PKI generation.

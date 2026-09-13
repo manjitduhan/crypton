@@ -1,0 +1,12 @@
+# OpenSSL project configuration.
+project: openssl
+repo: https://github.com/openssl/openssl.git
+version: openssl-3.5.7
+build_system: openssl
+
+# OpenSSL's shared build also produces static archives.
+libraries:
+  - static
+  - shared
+
+remarks: OpenSSL cryptography and TLS library

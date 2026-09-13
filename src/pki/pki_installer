@@ -1,0 +1,98 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+# Install one generated device bundle into a target swanctl directory.
+#
+# Usage:
+#   pki_installer /etc/swanctl output/pki/production/bundles/vpn-server.tar.gz
+#
+# The bundle is intentionally self-contained. The installer does not read
+# pki.json, so a generated bundle can be copied to another machine and
+# installed there without the Crypton workspace or Python dependencies.
+
+die() { printf 'pki_installer: error: %s\n' "$*" >&2; exit 1; }
+info() { printf 'pki_installer: %s\n' "$*"; }
+
+usage() {
+  cat <<'EOF'
+Usage: pki_installer <swanctl-directory> <device-bundle>
+
+Install a generated Crypton PKI device bundle directory or .tar.gz archive
+into a swanctl directory.
+
+Required bundle files:
+  private-key.pem
+  public-key.pem
+  device-certificate.pem
+  intermediate-ca.pem
+  root-ca.pem
+  chain.pem
+EOF
+}
+
+(( $# == 2 )) || { usage >&2; exit 2; }
+
+SWANCTL_DIR=$1
+INPUT_BUNDLE=$2
+[[ -n "$SWANCTL_DIR" ]] || die 'swanctl directory must not be empty'
+
+# Accept both the generated directory and the portable tar.gz archive. Archive
+# members are checked before extraction so a malicious bundle cannot escape
+# the temporary directory through absolute paths or '..' components.
+TEMP_DIR=''
+if [[ -d "$INPUT_BUNDLE" ]]; then
+  BUNDLE_DIR=$INPUT_BUNDLE
+elif [[ -f "$INPUT_BUNDLE" ]]; then
+  case "$INPUT_BUNDLE" in
+    *.tar.gz) DEVICE_NAME=$(basename -- "$INPUT_BUNDLE" .tar.gz) ;;
+    *.tgz) DEVICE_NAME=$(basename -- "$INPUT_BUNDLE" .tgz) ;;
+    *) die "bundle must be a directory, .tar.gz, or .tgz archive: $INPUT_BUNDLE" ;;
+  esac
+  TEMP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/crypton-pki-installer.XXXXXX")
+  trap 'rm -rf -- "$TEMP_DIR"' EXIT
+  while IFS= read -r member; do
+    case "$member" in
+      /*|../*|*/../*|..|*/..|./*|*/./*) die "unsafe archive member: $member" ;;
+    esac
+  done < <(tar -tzf "$INPUT_BUNDLE")
+  tar -xzf "$INPUT_BUNDLE" -C "$TEMP_DIR"
+  BUNDLE_DIR="$TEMP_DIR/$DEVICE_NAME"
+  [[ -d "$BUNDLE_DIR" ]] || die "archive must contain a top-level directory named '$DEVICE_NAME'"
+else
+  die "bundle directory or archive not found: $INPUT_BUNDLE"
+fi
+
+# Derive a stable credential name from the bundle directory. Names are kept
+# strict because they become filenames below private/, x509/, and x509ca/.
+DEVICE_NAME=${DEVICE_NAME:-$(basename -- "$BUNDLE_DIR")}
+[[ "$DEVICE_NAME" =~ ^[a-zA-Z0-9._-]+$ ]] || die "invalid bundle directory name: $DEVICE_NAME"
+
+for file in \
+  private-key.pem \
+  public-key.pem \
+  device-certificate.pem \
+  intermediate-ca.pem \
+  root-ca.pem \
+  chain.pem; do
+  [[ -f "$BUNDLE_DIR/$file" ]] || die "required bundle file is missing: $BUNDLE_DIR/$file"
+done
+
+[[ "$SWANCTL_DIR" != / ]] || die 'refusing to use / as the swanctl directory'
+
+# Create only the standard swanctl credential directories. `install` both
+# copies the files and applies the intended permissions to private material.
+install -d -m 0755 \
+  "$SWANCTL_DIR/private" \
+  "$SWANCTL_DIR/x509" \
+  "$SWANCTL_DIR/x509ca" \
+  "$SWANCTL_DIR/public" \
+  "$SWANCTL_DIR/chains"
+
+install -m 0600 "$BUNDLE_DIR/private-key.pem"           "$SWANCTL_DIR/private/$DEVICE_NAME.key.pem"
+install -m 0644 "$BUNDLE_DIR/public-key.pem"            "$SWANCTL_DIR/public/$DEVICE_NAME.public.pem"
+install -m 0644 "$BUNDLE_DIR/device-certificate.pem"    "$SWANCTL_DIR/x509/$DEVICE_NAME.cert.pem"
+install -m 0644 "$BUNDLE_DIR/intermediate-ca.pem"       "$SWANCTL_DIR/x509ca/$DEVICE_NAME-intermediate-ca.cert.pem"
+install -m 0644 "$BUNDLE_DIR/root-ca.pem"               "$SWANCTL_DIR/x509ca/$DEVICE_NAME-root-ca.cert.pem"
+install -m 0644 "$BUNDLE_DIR/chain.pem"                 "$SWANCTL_DIR/chains/$DEVICE_NAME-chain.pem"
+
+info "installed device bundle '$DEVICE_NAME' into $SWANCTL_DIR"

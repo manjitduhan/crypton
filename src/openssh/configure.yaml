@@ -1,0 +1,34 @@
+# OpenSSH project configuration.
+project: openssh
+repo: https://github.com/openssh/openssh-portable.git
+version: V_10_0_P1
+build_system: autotools
+depends_on: openssl
+
+client:
+  kex_algorithms: mlkem768x25519-sha256,sntrup761x25519-sha512,sntrup761x25519-sha512@openssh.com,curve25519-sha256,curve25519-sha256@libssh.org,ecdh-sha2-nistp256
+  macs: hmac-sha2-512-etm@openssh.com,hmac-sha2-256-etm@openssh.com,umac-128-etm@openssh.com
+  ciphers: chacha20-poly1305@openssh.com,aes256-gcm@openssh.com,aes256-ctr,aes128-gcm@openssh.com,aes128-ctr
+  host_key_algorithms: default
+  preferred_authentications: publickey,password,keyboard-interactive
+  password_authentication: yes
+  kbd_interactive_authentication: yes
+  strict_host_key_checking: ask
+
+server:
+  port: 2224
+  bind: 0.0.0.0
+  kex_algorithms: mlkem768x25519-sha256,sntrup761x25519-sha512,sntrup761x25519-sha512@openssh.com,curve25519-sha256,curve25519-sha256@libssh.org,ecdh-sha2-nistp256
+  macs: hmac-sha2-512-etm@openssh.com,hmac-sha2-256-etm@openssh.com,umac-128-etm@openssh.com
+  ciphers: chacha20-poly1305@openssh.com,aes256-gcm@openssh.com,aes256-ctr,aes128-gcm@openssh.com,aes128-ctr
+  password_authentication: yes
+  kbd_interactive_authentication: no
+  pubkey_authentication: yes
+  permit_root_login: no
+  permit_tty: yes
+  allow_tcp_forwarding: yes
+  x11_forwarding: no
+  use_dns: no
+  banner: none
+
+remarks: Portable OpenSSH client and server

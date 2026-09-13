@@ -1,0 +1,15 @@
+diff --git a/strongMan/helper_apps/vici/wrapper/wrapper.py b/strongMan/helper_apps/vici/wrapper/wrapper.py
+--- a/strongMan/helper_apps/vici/wrapper/wrapper.py
++++ b/strongMan/helper_apps/vici/wrapper/wrapper.py
+@@ -7,8 +7,10 @@ from .exception import ViciSocketException, ViciTerminateException, ViciLoadException, \
+ 
+ 
+ class ViciWrapper(object):
+-    def __init__(self, socket_path="/var/run/charon.vici"):
+-        self.socket_path = socket_path
++    def __init__(self, socket_path=None):
++        self.socket_path = socket_path or os.environ.get(
++            "CRYPTON_STRONGMAN_VICI_SOCKET", "/var/run/charon.vici"
++        )
+         if not os.path.exists(self.socket_path):
+             raise ViciSocketException(self.socket_path + " doesn't exist!")

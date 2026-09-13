@@ -1,0 +1,191 @@
+{
+  "schema_version": 1,
+  "pki": {
+    "authorities": [
+      {
+        "name": "server",
+        "output_dir": "output/pki/server",
+        "root_ca": {
+          "key": {
+            "algorithm": "rsa",
+            "size": 4096
+          },
+          "certificate": {
+            "validity_days": 3650,
+            "signature": {
+              "digest": "sha256",
+              "rsa_padding": "pkcs1"
+            },
+            "subject": {
+              "common_name": "Crypton Production Root CA",
+              "organization": "Crypton",
+              "country": "YE",
+              "state_or_province": "Sana'a",
+              "locality": "Sana'a"
+            }
+          },
+          "intermediate_cas": [
+            {
+              "name": "vpn",
+              "key": {
+                "algorithm": "rsa",
+                "size": 3072
+              },
+              "certificate": {
+                "validity_days": 1825,
+                "signature": {
+                  "digest": "sha256",
+                  "rsa_padding": "pkcs1"
+                },
+                "subject": {
+                  "common_name": "Crypton Production VPN Intermediate CA",
+                  "organization": "Crypton",
+                  "country": "YE",
+                  "state_or_province": "Sana'a",
+                  "locality": "Sana'a"
+                },
+                "path_length": 0
+              },
+              "devices": [
+                {
+                  "name": "vpn-server",
+                  "role": "server",
+                  "key": {
+                    "algorithm": "rsa",
+                    "size": 3072
+                  },
+                  "certificate": {
+                    "validity_days": 825,
+                    "signature": {
+                      "digest": "sha256",
+                      "rsa_padding": "pkcs1"
+                    },
+                    "subject": {
+                      "common_name": "vpn.example.com",
+                      "organization": "Crypton",
+                      "organizational_unit": "VPN",
+                      "country": "YE",
+                      "state_or_province": "Sana'a",
+                      "locality": "Sana'a"
+                    },
+                    "sans": [
+                      "vpn.example.com",
+                      "192.168.1.10"
+                    ],
+                    "usage": [
+                      "server_auth"
+                    ]
+                  }
+                },
+                {
+                  "name": "branch-router",
+                  "role": "client",
+                  "key": {
+                    "algorithm": "ecdsa",
+                    "curve": "secp384r1"
+                  },
+                  "certificate": {
+                    "validity_days": 825,
+                    "signature": {
+                      "digest": "sha384"
+                    },
+                    "subject": {
+                      "common_name": "branch-router",
+                      "organization": "Crypton",
+                      "organizational_unit": "VPN Clients",
+                      "country": "YE",
+                      "state_or_province": "Sana'a",
+                      "locality": "Sana'a"
+                    },
+                    "sans": [
+                      "branch-router.example.com"
+                    ],
+                    "usage": [
+                      "client_auth"
+                    ]
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      },
+      {
+        "name": "laboratory",
+        "output_dir": "output/pki/laboratory",
+        "root_ca": {
+          "key": {
+            "algorithm": "ecdsa",
+            "curve": "secp384r1"
+          },
+          "certificate": {
+            "validity_days": 1825,
+            "signature": {
+              "digest": "sha384"
+            },
+            "subject": {
+              "common_name": "Crypton Laboratory Root CA",
+              "organization": "Crypton Laboratory",
+              "country": "YE",
+              "state_or_province": "Sana'a",
+              "locality": "Sana'a"
+            }
+          },
+          "intermediate_cas": [
+            {
+              "name": "testing",
+              "key": {
+                "algorithm": "ecdsa",
+                "curve": "secp256r1"
+              },
+              "certificate": {
+                "validity_days": 730,
+                "signature": {
+                  "digest": "sha256"
+                },
+                "subject": {
+                  "common_name": "Crypton Laboratory Testing CA",
+                  "organization": "Crypton Laboratory",
+                  "country": "YE",
+                  "state_or_province": "Sana'a",
+                  "locality": "Sana'a"
+                },
+                "path_length": 0
+              },
+              "devices": [
+                {
+                  "name": "test-server",
+                  "role": "server",
+                  "key": {
+                    "algorithm": "rsa",
+                    "size": 2048
+                  },
+                  "certificate": {
+                    "validity_days": 365,
+                    "signature": {
+                      "digest": "sha256",
+                      "rsa_padding": "pkcs1"
+                    },
+                    "subject": {
+                      "common_name": "test.vpn.example.com",
+                      "organization": "Crypton Laboratory",
+                      "country": "YE",
+                      "state_or_province": "Sana'a",
+                      "locality": "Sana'a"
+                    },
+                    "sans": [
+                      "test.vpn.example.com"
+                    ],
+                    "usage": [
+                      "server_auth"
+                    ]
+                  }
+                }
+              ]
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

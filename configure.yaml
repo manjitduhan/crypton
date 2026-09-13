@@ -1,84 +1,13 @@
-# Crypto source and build configuration.
-# Versions are Git refs (tags, branches, or commit hashes).
-
-project: Crypto
+# Crypto workspace configuration.
+#
+# Project-specific source, build, dependency, and runtime settings live in
+# src/<project>/configure.yaml. Keeping this file limited to workspace paths
+# prevents project options from becoming a second central configuration.
 
 paths:
   sources: sources
   build: build
   output: output
 
-projects:
-  openssl:
-    repo: https://github.com/openssl/openssl.git
-    version: openssl-3.5.7
-    build_system: openssl
-    # OpenSSL's shared build also produces the static archives. Keep both
-    # library forms in the isolated output prefix.
-    libraries:
-      - static
-      - shared
-    plugins: []
-    remarks: OpenSSL cryptography and TLS library
-
-  openssh:
-    repo: https://github.com/openssh/openssh-portable.git
-    version: V_10_0_P1
-    build_system: autotools
-    # Client and server algorithm lists must have at least one common entry.
-    # 'default' leaves the OpenSSH built-in defaults in effect.
-    client:
-      kex_algorithms: mlkem768x25519-sha256,sntrup761x25519-sha512,sntrup761x25519-sha512@openssh.com,curve25519-sha256,curve25519-sha256@libssh.org,ecdh-sha2-nistp256
-      macs: hmac-sha2-512-etm@openssh.com,hmac-sha2-256-etm@openssh.com,umac-128-etm@openssh.com
-      ciphers: chacha20-poly1305@openssh.com,aes256-gcm@openssh.com,aes256-ctr,aes128-gcm@openssh.com,aes128-ctr
-      host_key_algorithms: default
-      preferred_authentications: publickey,password,keyboard-interactive
-      password_authentication: yes
-      kbd_interactive_authentication: yes
-      strict_host_key_checking: ask
-    server:
-      port: 2224
-      bind: 0.0.0.0
-      kex_algorithms: mlkem768x25519-sha256,sntrup761x25519-sha512,sntrup761x25519-sha512@openssh.com,curve25519-sha256,curve25519-sha256@libssh.org,ecdh-sha2-nistp256
-      macs: hmac-sha2-512-etm@openssh.com,hmac-sha2-256-etm@openssh.com,umac-128-etm@openssh.com
-      ciphers: chacha20-poly1305@openssh.com,aes256-gcm@openssh.com,aes256-ctr,aes128-gcm@openssh.com,aes128-ctr
-      password_authentication: yes
-      kbd_interactive_authentication: no
-      pubkey_authentication: yes
-      permit_root_login: no
-      permit_tty: yes
-      allow_tcp_forwarding: yes
-      x11_forwarding: no
-      use_dns: no
-      banner: none
-    plugins: []
-    remarks: Portable OpenSSH client and server
-
-  strongswan:
-    repo: https://github.com/strongswan/strongswan.git
-    version: 6.0.6
-    build_system: autotools
-    # Only plugins listed here are passed as --enable-<plugin>. Add or remove
-    # entries to control the StrongSwan feature set.
-    plugins:
-      - openssl
-      - vici
-      - swanctl
-      - socket-default
-      - kernel-netlink
-      - nonce
-      - random
-      - x509
-      - pubkey
-      - pkcs1
-      - pem
-      - constraints
-      - revocation
-    remarks: IPsec VPN implementation; built with swanctl and VICI support
-
-  strongman:
-    repo: https://github.com/strongswan/strongMan.git
-    version: master
-    build_system: python
-    plugins: []
-    remarks: Django management UI for strongSwan
+# Projects are discovered from src/*/compile.sh. Do not add project settings
+# here; add or edit the project's own configure.yaml instead.

@@ -1,0 +1,17 @@
+diff --git a/strongMan/settings/base.py b/strongMan/settings/base.py
+--- a/strongMan/settings/base.py
++++ b/strongMan/settings/base.py
+@@ -2,7 +2,13 @@ import os
+ 
+ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+ 
+-ALLOWED_HOSTS = []
++def allowed_hosts_from_environment():
++    """Return Django hosts configured by the crypton launcher."""
++    value = os.environ.get('CRYPTON_STRONGMAN_ALLOWED_HOSTS', '')
++    return [host.strip() for host in value.split(',') if host.strip()]
++
++
++ALLOWED_HOSTS = allowed_hosts_from_environment()
+ 
+ # Application definition

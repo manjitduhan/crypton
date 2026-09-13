@@ -1,0 +1,21 @@
+diff --git a/strongMan/apps/connections/static/connections/logger.js b/strongMan/apps/connections/static/connections/logger.js
+--- a/strongMan/apps/connections/static/connections/logger.js
++++ b/strongMan/apps/connections/static/connections/logger.js
+@@ -10,14 +10,17 @@ function logger(csrf, logId) {
+         },
+         success: function (response) {
+-            last_log = -1;
++            var nextLogId = logId;
+             for (var log in response.logs) {
+                 addRowToLog(response.logs[log]);
+-                last_log = response.logs[log].id;
++                nextLogId = response.logs[log].id;
+             }
+-            logger(csrf, last_log);
++            // Avoid a tight request loop when the backend returns no logs.
++            window.setTimeout(function () {
++                logger(csrf, nextLogId);
++            }, response.logs.length ? 0 : 1000);
+         }
+     });
+ }

@@ -1,0 +1,28 @@
+# strongSwan project configuration.
+project: strongswan
+repo: https://github.com/strongswan/strongswan.git
+version: 6.0.6
+build_system: autotools
+depends_on: openssl
+
+# All project-specific build paths stay here. Relative paths are resolved from
+# the workspace root; the toolchain path must contain gcc, make, and friends.
+prefix_path: output/strongswan
+toolchain_path: /usr/bin
+
+# Only these plugins are enabled; default plugins remain disabled.
+plugins:
+  - openssl
+  - vici
+  - socket-default
+  - kernel-netlink
+  - nonce
+  - random
+  - x509
+  - pubkey
+  - pkcs1
+  - pem
+  - constraints
+  - revocation
+
+remarks: IPsec VPN implementation; built with swanctl and VICI support

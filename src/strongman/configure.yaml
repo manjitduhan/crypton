@@ -1,0 +1,23 @@
+# strongMan project configuration.
+project: strongman
+repo: https://github.com/strongswan/strongMan.git
+version: master
+build_system: python
+
+# StrongMan runtime settings. allowed_hosts is a comma-separated value; '*'
+# is useful when the Raspberry Pi receives changing LAN addresses.
+server:
+  workers: 1
+  bind: 0.0.0.0:1515
+  allowed_hosts: "*"
+
+# StrongSwan is launched by crypton with its VICI socket inside output/.
+vici_socket: output/strongswan/var/run/charon.vici
+
+# The build creates or updates this Django administrator after loading the
+# upstream fixture. Change the password before exposing StrongMan remotely.
+admin:
+  username: admin
+  password: change-me-now
+
+remarks: Django management UI for strongSwan

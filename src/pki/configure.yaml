@@ -1,0 +1,10 @@
+# PKI project configuration.
+#
+# The PKI definition itself is kept in pki.json. This file only tells crypton
+# that PKI is a project and that its certificate generator needs OpenSSL.
+project: pki
+build_system: internal
+depends_on: openssl
+pki_config: pki.json
+
+remarks: Certificate authority and device-certificate management for Crypton
