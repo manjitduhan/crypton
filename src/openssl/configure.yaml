@@ -4,6 +4,11 @@ repo: https://github.com/openssl/openssl.git
 version: openssl-3.5.7
 build_system: openssl
 
+# These are target filesystem paths, not workspace paths. The compiler stages
+# them under output/ so export can create a normal root filesystem archive.
+target_prefix: /usr
+ssl_dir: /etc/ssl/crypton
+
 # OpenSSL's shared build also produces static archives.
 libraries:
   - static

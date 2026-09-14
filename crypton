@@ -7,6 +7,7 @@ set -Eeuo pipefail
 #   - host dependency installation;
 #   - project discovery and dependency ordering;
 #   - dispatching commands to src/<project>/compile.sh;
+#   - dispatching workspace export to scripts/crypton_export.sh;
 #   - common workspace paths and cleanup.
 #
 # Project-specific build and runtime behavior belongs beside the project in
@@ -59,6 +60,15 @@ workspace_path() {
 source_root() { workspace_path sources; }
 build_root() { workspace_path build; }
 output_root() { workspace_path output; }
+
+# Export is deliberately kept outside this dispatcher. Crypton only starts
+# the workspace packager; the target-side installer is shipped inside the
+# resulting archive and does not depend on this repository.
+export_workspace() {
+  local exporter="$SCRIPT_DIR/scripts/crypton_export.sh"
+  [[ -x "$exporter" ]] || die "exporter is not executable: $exporter"
+  CRYPTON_OUTPUT_ROOT="$(output_root)" "$exporter" "$@"
+}
 
 project_dir() { printf '%s/%s' "$PROJECTS_DIR" "$1"; }
 project_script() { printf '%s/compile.sh' "$(project_dir "$1")"; }
@@ -300,6 +310,7 @@ Commands:
   clean [all|project]     Remove generated build/output trees
   clean-sources [project] [--force]
                           Remove downloaded source checkouts
+  export                  Create crypton_installer.tar for the target host
   run <project> [args]    Run a project's configured command
   stop <project>          Stop a running project service
   list                    List projects discovered under src/
@@ -336,6 +347,7 @@ main() {
       clean_all "$project"
       ;;
     clean-sources|clean-source) clean_sources "$@" ;;
+    export) export_workspace "$@" ;;
     run)
       project=${1:-}
       shift || true

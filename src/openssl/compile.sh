@@ -8,9 +8,16 @@ source "$PROJECT_DIR/../../scripts/project-common.sh"
 # Configure and install OpenSSL into its isolated workspace prefix. The
 # libraries list is intentionally read from this project's configure.yaml.
 build() {
-  local library library_count=0 static=0 shared=0
-  local -a configure_args=(--prefix="$OUTPUT_DIR" --openssldir="$OUTPUT_DIR/ssl" no-tests "-Wl,-rpath,$OUTPUT_DIR/lib")
+  local library library_count=0 static=0 shared=0 target_prefix ssl_dir
+  local -a configure_args
   checkout_project
+  target_prefix=$(config_value target_prefix); target_prefix=${target_prefix:-/usr}
+  ssl_dir=$(config_value ssl_dir); ssl_dir=${ssl_dir:-/etc/ssl/crypton}
+  [[ "$target_prefix" == /* && "$ssl_dir" == /* ]] || die 'target_prefix and ssl_dir must be absolute paths'
+  # Build for the target filesystem, then stage the installation below the
+  # project output directory. This removes workspace-specific paths from the
+  # binaries and makes the output suitable for crypton export.
+  configure_args=(--prefix="$target_prefix" --libdir=lib --openssldir="$ssl_dir" no-tests)
   while IFS= read -r library; do
     [[ -n "$library" ]] || continue
     case "$library" in
@@ -29,19 +36,26 @@ build() {
   mkdir -p "$BUILD_DIR" "$OUTPUT_DIR"
   # Remove installed artifacts from an older library-mode configuration while
   # retaining the output directory itself.
-  for subdir in lib lib64 include/openssl bin ssl; do rm -rf -- "$OUTPUT_DIR/$subdir"; done
+  for subdir in usr etc; do rm -rf -- "$OUTPUT_DIR/$subdir"; done
   rm -f "$BUILD_DIR/Makefile"
   (cd "$BUILD_DIR" && "$SOURCE_DIR/Configure" "${configure_args[@]}" "$@")
   (cd "$BUILD_DIR" && make -j"$JOBS")
-  (cd "$BUILD_DIR" && make install_sw install_ssldirs)
+  (cd "$BUILD_DIR" && make install_sw install_ssldirs DESTDIR="$OUTPUT_DIR")
   info "built into $OUTPUT_DIR"
+}
+
+openssl_binary() {
+  local binary="$OUTPUT_DIR/usr/bin/openssl"
+  [[ -x "$binary" ]] || die 'OpenSSL is not built; run ./crypton build openssl'
+  printf '%s\n' "$binary"
 }
 
 run() {
   # With no arguments, report the isolated OpenSSL version; otherwise pass the
   # caller's arguments to the isolated binary.
-  [[ -x "$OUTPUT_DIR/bin/openssl" ]] || die 'OpenSSL is not built; run ./crypton build openssl'
-  "$OUTPUT_DIR/bin/openssl" "${@:-version}"
+  local binary library_path="$OUTPUT_DIR/usr/lib"
+  binary=$(openssl_binary)
+  LD_LIBRARY_PATH="$library_path${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" "$binary" "${@:-version}"
 }
 
 require_project_config

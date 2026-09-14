@@ -5,6 +5,13 @@ version: V_10_0_P1
 build_system: autotools
 depends_on: openssl
 
+# Target filesystem paths. The build stages these locations below output/ so
+# the export command can package OpenSSH without embedding the build host.
+target_prefix: /usr
+sysconfdir: /etc/ssh
+privsep_path: /var/empty
+pid_dir: /run/crypton/openssh
+
 client:
   kex_algorithms: mlkem768x25519-sha256,sntrup761x25519-sha512,sntrup761x25519-sha512@openssh.com,curve25519-sha256,curve25519-sha256@libssh.org,ecdh-sha2-nistp256
   macs: hmac-sha2-512-etm@openssh.com,hmac-sha2-256-etm@openssh.com,umac-128-etm@openssh.com

@@ -10,6 +10,13 @@ depends_on: openssl
 prefix_path: output/strongswan
 toolchain_path: /usr/bin
 
+# Target filesystem paths. The build stages these paths below output/ so the
+# resulting package can be installed on another compatible host.
+target_prefix: /usr
+sysconfdir: /etc/strongswan
+pid_dir: /run/crypton/strongswan
+swanctl_dir: /etc/swanctl
+
 # Only these plugins are enabled; default plugins remain disabled.
 plugins:
   - openssl

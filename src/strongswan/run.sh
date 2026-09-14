@@ -5,8 +5,8 @@ PROJECT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)"
 # shellcheck source=../../scripts/project-common.sh
 source "$PROJECT_DIR/../../scripts/project-common.sh"
 
-# Use the same project-local prefix selected by compile.sh. Keeping this
-# lookup here lets `run` work when the prefix is changed from its default.
+# Use the same project-local staging directory selected by compile.sh. Keeping
+# this lookup here lets `run` work when prefix_path is changed from its default.
 project_path() {
   case "$1" in
     /*) printf '%s\n' "$1" ;;
@@ -17,10 +17,12 @@ project_path() {
 prefix_path=$(config_value prefix_path)
 [[ -z "$prefix_path" ]] || OUTPUT_DIR=$(project_path "$prefix_path")
 
-# Find a strongSwan executable without requiring a system installation.
+# Find a strongSwan executable without requiring a system installation. The
+# build output is a staged target root, so binaries live below output/usr.
 find_binary() {
   local name=$1 path
-  for path in "$OUTPUT_DIR/sbin/$name" "$OUTPUT_DIR/bin/$name" "$OUTPUT_DIR/libexec/ipsec/$name"; do
+  for path in "$OUTPUT_DIR/usr/sbin/$name" "$OUTPUT_DIR/usr/bin/$name" \
+    "$OUTPUT_DIR/usr/libexec/ipsec/$name" "$OUTPUT_DIR/libexec/ipsec/$name"; do
     [[ -x "$path" ]] || continue
     printf '%s\n' "$path"
     return 0
@@ -30,10 +32,10 @@ find_binary() {
 
 # Run swanctl against this project's private VICI socket and libraries.
 run_swanctl() {
-  local swanctl library_path uri="unix://$OUTPUT_DIR/var/run/charon.vici"
+  local swanctl library_path uri="unix:///run/crypton/strongswan/charon.vici"
   local arg has_uri=0
   swanctl=$(find_binary swanctl) || die 'swanctl is not built; run ./crypton build strongswan'
-  library_path="$OUTPUT_ROOT/openssl/lib:$OUTPUT_DIR/lib:$OUTPUT_DIR/lib/ipsec"
+  library_path="$OUTPUT_ROOT/openssl/usr/lib:$OUTPUT_DIR/usr/lib:$OUTPUT_DIR/usr/lib/ipsec"
 
   for arg in "$@"; do
     case "$arg" in
@@ -54,14 +56,14 @@ run_daemon() {
   local charon runtime pid_file vici_socket log_file config
   local pid command_line attempt launcher_pid library_path
   charon=$(find_binary charon) || die 'charon is not built; run ./crypton build strongswan'
-  runtime="$OUTPUT_DIR/var/run"
+  runtime="/run/crypton/strongswan"
   pid_file="$runtime/charon.pid"
   vici_socket="$runtime/charon.vici"
-  log_file="$OUTPUT_DIR/var/log/charon.log"
-  config="$OUTPUT_DIR/etc/strongswan.conf"
+  log_file="/var/log/crypton/strongswan/charon.log"
+  config="$OUTPUT_DIR/etc/strongswan/strongswan.conf"
   [[ -f "$config" ]] || die "strongSwan configuration not found: $config"
-  mkdir -p "$runtime" "$OUTPUT_DIR/var/log"
-  library_path="$OUTPUT_ROOT/openssl/lib:$OUTPUT_DIR/lib:$OUTPUT_DIR/lib/ipsec"
+  mkdir -p "$runtime" "$(dirname -- "$log_file")"
+  library_path="$OUTPUT_ROOT/openssl/usr/lib:$OUTPUT_DIR/usr/lib:$OUTPUT_DIR/usr/lib/ipsec"
 
   # Stop a previous instance and remove a socket left by failed startup.
   [[ -f "$pid_file" ]] && stop_daemon
@@ -102,14 +104,14 @@ run_daemon() {
 
 # Stop only a charon process belonging to this project prefix.
 stop_daemon() {
-  local pid_file="$OUTPUT_DIR/var/run/charon.pid" pid command_line attempt
+  local pid_file="/run/crypton/strongswan/charon.pid" pid command_line attempt
   [[ -f "$pid_file" ]] || { info 'strongSwan charon is not running'; return 0; }
   pid=$(tr -d '[:space:]' < "$pid_file")
   [[ "$pid" =~ ^[0-9]+$ ]] || die "invalid charon PID file: $pid_file"
   if ! kill -0 "$pid" 2>/dev/null; then
     # A crashed daemon can leave its PID file and socket behind. They are
     # generated state, so remove them and allow the next start to proceed.
-    rm -f -- "$pid_file" "$OUTPUT_DIR/var/run/charon.vici"
+    rm -f -- "$pid_file" "/run/crypton/strongswan/charon.vici"
     info 'removed stale strongSwan runtime files'
     return 0
   fi
@@ -125,7 +127,7 @@ stop_daemon() {
     warn 'charon did not stop gracefully; sending SIGKILL'
     kill -KILL "$pid" 2>/dev/null || true
   fi
-  rm -f -- "$pid_file" "$OUTPUT_DIR/var/run/charon.vici"
+  rm -f -- "$pid_file" "/run/crypton/strongswan/charon.vici"
   info 'strongSwan charon stopped'
 }
 

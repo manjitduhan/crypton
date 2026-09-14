@@ -31,6 +31,29 @@ the detected OS and package list without changing the host.
     ./crypton build strongman
     ./crypton build pki
 
+After all runtime projects have been built, create one target deployment
+artifact:
+
+    ./crypton export
+
+This creates `output/crypton_installer/crypton_installer.tar`. The outer
+archive contains `crypton_package.tar`, which has the filesystem files for
+OpenSSL, OpenSSH, strongSwan, and StrongMan, plus the standalone
+`crypton_install.sh` installer and a manifest. PKI authority output and
+private keys are deliberately excluded.
+
+Copy the single outer archive to the target, extract it, and run:
+
+    tar -xf crypton_installer.tar
+    sudo ./crypton_install.sh
+
+The installer does not require the Crypton repository. By default it installs
+below `/` and therefore updates paths such as `/usr/bin`, `/usr/lib`, and
+`/etc`. Use an alternate filesystem root when assembling an image or staging
+an installation:
+
+    ./crypton_install.sh --root /mnt/target-root
+
 Projects declare build dependencies in their own `configure.yaml`. Crypton
 builds those dependencies first. The current build relationships are:
 
@@ -70,10 +93,10 @@ unless `--force` is supplied:
     ./crypton clean-sources strongman --force
 
 Source checkouts go under `sources/`, intermediate files under `build/`, and
-installed results under `output/<project>/`. Each project output directory is
-the install-prefix bundle for that project; copy its contents when deploying,
-for example `cp -a output/strongswan/. /target/`. Keeping one prefix per
-project prevents files from different projects overwriting one another.
+staged target files under `output/<project>/`. Each compiled project output is
+a target-root tree used by `crypton export`; it is not intended to be copied
+directly over a live host. Keeping one staging tree per project prevents
+files from different projects overwriting one another before packaging.
 
 `run` needs a project name. OpenSSL performs a safe version check when no
 additional arguments are supplied:
@@ -217,12 +240,13 @@ Running StrongSwan starts the project's `charon` daemon, not a system service:
     ./crypton run strongswan swanctl --list-sas
     ./crypton stop strongswan
 
-The daemon reads `output/strongswan/etc/strongswan.conf`. Its PID file, VICI
-socket, and log are kept under `output/strongswan/var/`, so the launcher does
-not use `/etc/strongswan`, `/etc/ipsec`, `/var/run`, or a system-installed
-strongSwan instance. Because strongSwan is built against crypton's OpenSSL,
-deploy both `output/openssl/` and `output/strongswan/` to the same target
-prefix (for example, copy both contents into `/opt/crypton/`).
+The workspace launcher reads the staged
+`output/strongswan/etc/strongswan/strongswan.conf`; its target runtime paths
+are `/run/crypton/strongswan` and `/var/log/crypton/strongswan`. The exported
+package installs strongSwan under `/usr`, its configuration under
+`/etc/strongswan`, and its swanctl configuration under `/etc/swanctl`.
+Because strongSwan is built against crypton's OpenSSL, `crypton export`
+includes both projects in the same target package.
 
 Charon manages kernel IPsec state, so it needs Linux network capabilities. On
 a normal unprivileged account, start and stop it with:

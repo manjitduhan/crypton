@@ -11,8 +11,8 @@ server:
   bind: 0.0.0.0:1515
   allowed_hosts: "*"
 
-# StrongSwan is launched by crypton with its VICI socket inside output/.
-vici_socket: output/strongswan/var/run/charon.vici
+# The packaged strongSwan daemon uses this target runtime socket.
+vici_socket: /run/crypton/strongswan/charon.vici
 
 # The build creates or updates this Django administrator after loading the
 # upstream fixture. Change the password before exposing StrongMan remotely.

@@ -26,7 +26,7 @@ run() {
       install_bundle "$@"
       ;;
     *)
-      CRYPTON_OPENSSL_BIN="${CRYPTON_OPENSSL_BIN:-$OUTPUT_ROOT/openssl/bin/openssl}" \
+      CRYPTON_OPENSSL_BIN="${CRYPTON_OPENSSL_BIN:-$OUTPUT_ROOT/openssl/usr/bin/openssl}" \
         python3 "$PROJECT_DIR/pki.py" --config "$config" "$@"
       ;;
   esac
